@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union, cast
 
 
-DATA_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(__file__).resolve().parent
 
 RealizationType = Union[str, float, int]
 
