@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union, cast
@@ -295,9 +296,14 @@ def render_page() -> None:
         ax.set_visible(False)
 
     if legend_handles:
+        unique_handles: Dict[str, Artist] = {}
+        for handle, label in zip(legend_handles, legend_labels):
+            if label not in unique_handles:
+                unique_handles[label] = cast(Artist, handle)
+
         fig.legend(
-            legend_handles,
-            legend_labels,
+            list(unique_handles.values()),
+            list(unique_handles.keys()),
             loc="upper center",
             ncol=min(len(legend_labels), 3),
             fontsize=9,
