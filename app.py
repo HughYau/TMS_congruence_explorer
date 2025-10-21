@@ -372,7 +372,6 @@ def render_page() -> None:
             experiment_selection = st.multiselect(
                 "Experiments",
                 options=experiments,
-                default=st.session_state["experiment_selection"],
                 key="experiment_selection",
                 help=f"Select from {len(experiments)} available experiments"
             )
@@ -525,7 +524,7 @@ def render_page() -> None:
             col=1,
         )
 
-    base_height = 420
+    base_height = 630
     plot_height = max(440, rows * base_height)
 
     plotly_fig.update_layout(
