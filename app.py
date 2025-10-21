@@ -33,7 +33,7 @@ def plot_score_results(
 
     agg_df = (
         plot_df.groupby(["experiment_name", "sequence_length"], as_index=False)
-        .agg(mean_score=("score", "mean"), std_score=("score", "std"))
+        .agg(mean_score=("score", "mean"), sem_score=("score", "sem"))
     )
     agg_df = agg_df.sort_values(["experiment_name", "sequence_length"])
     agg_df = agg_df[agg_df["sequence_length"] <= length]
@@ -110,11 +110,11 @@ def plot_score_results(
         legend_handles.append(line)
         legend_labels.append(str(exp_name))
 
-        if error_bars and "std_score" in subdf.columns and not subdf["std_score"].isna().all():
+        if error_bars and "sem_score" in subdf.columns and not subdf["sem_score"].isna().all():
             ax.fill_between(
                 subdf["sequence_length"],
-                subdf["mean_score"] - subdf["std_score"],
-                subdf["mean_score"] + subdf["std_score"],
+                subdf["mean_score"] - 1.96*subdf["sem_score"],
+                subdf["mean_score"] + 1.96*subdf["sem_score"],
                 color=color,
                 alpha=0.15,
                 linewidth=0,
@@ -167,13 +167,13 @@ def _collect_metadata(df_list: Iterable[pd.DataFrame]) -> Tuple[List[str], List[
 
 def _dataset_config() -> Dict[str, List[Tuple[str, str]]]:
     return {
-        "mutual_information": [
-            ("GD", "exp_c_map_score_metrics_GD.csv"),
-            ("NRMSD", "exp_c_map_score_metrics_NRMSD.csv"),
+        "crown": [
+            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_crown.csv"),
+            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_crown.csv"),
         ],
-        "sigmoid4log": [
-            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log.csv"),
-            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log.csv"),
+        "rim": [
+            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_rim.csv"),
+            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_rim.csv"),
         ],
     }
 
@@ -203,8 +203,8 @@ def render_page() -> None:
     st.title("Congruence Score Explorer")
 
     dataset_labels: List[Tuple[str, str]] = [
-        ("Mutual Information", "mutual_information"),
-        ("Sigmoid4Log", "sigmoid4log"),
+        ("Crown", "crown"),
+        ("Rim", "rim"),
     ]
 
     with st.sidebar:
