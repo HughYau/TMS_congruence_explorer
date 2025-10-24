@@ -4,6 +4,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union, cast
+import hashlib
+import colorsys
 
 
 DATA_ROOT = Path(__file__).resolve().parent
@@ -19,6 +21,31 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     g = int(hex_value[2:4], 16)
     b = int(hex_value[4:6], 16)
     return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def _stable_hash(value: str) -> int:
+    """Return a stable positive integer hash for a string across sessions.
+
+    Uses MD5 to avoid Python's randomized hash salt.
+    """
+    digest = hashlib.md5(value.encode("utf-8")).hexdigest()
+    # Use first 8 hex digits to form a 32-bit int
+    return int(digest[:8], 16)
+
+
+def _hash_color(label: str, region_color_offset: int = 0) -> str:
+    """Generate a deterministic, aesthetically pleasing HEX color from a label.
+
+    We map the label to a hue on the HSV color wheel and apply a small
+    region-specific offset so Crown/Rim colors remain distinguishable.
+    """
+    base = _stable_hash(label)
+    # Spread hues around the wheel; add an offset per region
+    hue = (base % 360 + region_color_offset * 30) % 360  # degrees
+    sat = 0.65  # keep reasonably saturated for visibility
+    val = 0.75  # medium brightness to work on light background
+    r, g, b = colorsys.hsv_to_rgb(hue / 360.0, sat, val)
+    return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
 
 
 def plot_score_results(
@@ -111,7 +138,11 @@ def plot_score_results(
 
     for exp_name, subdf in agg_df.groupby("experiment_name"):
         base, metric, agg = parse_label(str(exp_name))
-        color = color_map.get(base, "gray")
+        # Pick color: use predefined map for known bases; otherwise generate a stable color
+        if base in color_map:
+            color = color_map[base]
+        else:
+            color = _hash_color(str(exp_name), region_color_offset=region_color_offset)
         linestyle = linestyle_map.get(metric, "dashdot")
         marker_symbol = marker_map.get(agg)
         linewidth = 1 if base == "RANDOM" else 1.8
