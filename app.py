@@ -97,6 +97,11 @@ def plot_score_results(
             "ROW": "#e74c3c",
             "COL": "#f39c12",
         },
+        3: {  # Sulcus palette (purple tones)
+            "RANDOM": "#3d3d5c",
+            "ROW": "#9b59b6",
+            "COL": "#8e44ad",
+        },
     }
     
     color_map = color_palettes.get(region_color_offset, color_palettes[0])
@@ -260,6 +265,10 @@ def _dataset_config() -> Dict[str, List[Tuple[str, str]]]:
             ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_rim.csv"),
             ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_rim.csv"),
         ],
+        "sulcus": [
+            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_sulcus.csv"),
+            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_sulcus.csv"),
+        ],
     }
 
 
@@ -337,18 +346,21 @@ def render_page() -> None:
     dataset_labels: List[Tuple[str, str]] = [
         ("Crown", "crown"),
         ("Rim", "rim"),
+        ("Sulcus", "sulcus"),
     ]
+    # Initialize to satisfy static analyzers; will be set based on selection
+    data_bundle: Dict[str, object] = {}
 
     with st.sidebar:
         st.header("🎛️ Controls")
         
         # Dataset selection with expander for cleaner look
         with st.expander("📊 Dataset Selection", expanded=True):
-            # Add comparison mode toggle
+            # Comparison mode: show all three regions together
             compare_regions = st.checkbox(
-                "🔄 Compare Crown vs Rim",
+                "🔄 Compare all regions (Crown/Rim/Sulcus)",
                 value=False,
-                help="Enable this to overlay Crown and Rim data for the same experiments"
+                help="Enable this to overlay Crown, Rim and Sulcus data for the same experiments"
             )
             
             if not compare_regions:
@@ -362,21 +374,37 @@ def render_page() -> None:
                 dataset_key = dataset_map[dataset_display]
                 data_bundle = load_dataset(dataset_key)
                 datasets_to_plot = [(dataset_key, data_bundle)]
+
+                experiments = cast(List[str], data_bundle["all_experiments"]) if "all_experiments" in data_bundle else []
+                all_realizations_list = cast(List[RealizationType], data_bundle.get("all_realizations", []))
+                seq_min = int(cast(int, data_bundle.get("seq_min", 1)))
+                seq_max = int(cast(int, data_bundle.get("seq_max", 100)))
             else:
-                st.info("📊 Comparing both Crown and Rim regions")
-                # Load both datasets
+                st.info("📊 Comparing Crown, Rim and Sulcus regions")
+                # Load all three datasets
                 crown_bundle = load_dataset("crown")
                 rim_bundle = load_dataset("rim")
-                datasets_to_plot = [("crown", crown_bundle), ("rim", rim_bundle)]
-                # Use first dataset for experiment list
-                data_bundle = crown_bundle
-                dataset_key = "crown_vs_rim"
+                sulcus_bundle = load_dataset("sulcus")
+                datasets_to_plot = [("crown", crown_bundle), ("rim", rim_bundle), ("sulcus", sulcus_bundle)]
+                dataset_key = "all_regions"
 
-            if "all_experiments" not in data_bundle:
-                st.warning("No experiments found in the selected dataset.")
-                return
+                # Union of experiments across regions
+                exp_sets = []
+                real_sets = []
+                seq_mins: List[int] = []
+                seq_maxs: List[int] = []
+                for _, bundle in datasets_to_plot:
+                    exp_sets.append(set(cast(List[str], bundle.get("all_experiments", []))))
+                    real_sets.append(set(cast(List[RealizationType], bundle.get("all_realizations", []))))
+                    if "seq_min" in bundle:
+                        seq_mins.append(int(cast(int, bundle["seq_min"])))
+                    if "seq_max" in bundle:
+                        seq_maxs.append(int(cast(int, bundle["seq_max"])))
+                experiments = sorted(set().union(*exp_sets)) if exp_sets else []
+                all_realizations_list = sorted(set().union(*real_sets), key=lambda v: str(v)) if real_sets else []
+                seq_min = min(seq_mins) if seq_mins else 1
+                seq_max = max(seq_maxs) if seq_maxs else 100
 
-            experiments = cast(List[str], data_bundle["all_experiments"])
             if not experiments:
                 st.warning("No experiments found in the selected dataset.")
                 return
@@ -414,9 +442,6 @@ def render_page() -> None:
 
         # Data range controls
         with st.expander("📏 Data Range", expanded=True):
-            seq_min = int(cast(int, data_bundle.get("seq_min", 1)))
-            seq_max = int(cast(int, data_bundle.get("seq_max", 100)))
-            
             col1, col2 = st.columns([3, 1])
             with col1:
                 length = st.slider(
@@ -434,7 +459,7 @@ def render_page() -> None:
         with st.expander("🔄 Realization", expanded=True):
             realization_labels = ["Average across realizations"]
             realization_lookup: Dict[str, Optional[RealizationType]] = {"Average across realizations": None}
-            for rid in cast(List[RealizationType], data_bundle.get("all_realizations", [])):
+            for rid in cast(List[RealizationType], all_realizations_list):
                 label = _format_realization_label(rid)
                 realization_labels.append(label)
                 realization_lookup[label] = rid
@@ -459,9 +484,8 @@ def render_page() -> None:
         if experiment_selection:
             st.caption(f"• Experiments: {len(experiment_selection)}")
             st.caption(f"• Steps range: {seq_min} → {length}")
-            all_realizations = data_bundle.get('all_realizations', [])
-            if isinstance(all_realizations, list):
-                st.caption(f"• Realizations: {len(all_realizations)}")
+            if isinstance(all_realizations_list, list):
+                st.caption(f"• Realizations: {len(all_realizations_list)}")
 
     metrics: Iterable[str] = ["GD", "NRMSD"]
     
