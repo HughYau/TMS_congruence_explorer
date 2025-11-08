@@ -6,11 +6,390 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union, cast
 import hashlib
 import colorsys
+import numpy as np
+from dataclasses import dataclass
 
 
 DATA_ROOT = Path(__file__).resolve().parent
 
 RealizationType = Union[str, float, int]
+
+DEFAULT_MESH_FILENAME = "geo.hdf5"
+REGION_DISPLAY_NAMES: Dict[str, str] = {
+    "crown": "Crown",
+    "rim": "Rim",
+    "sulcus": "Sulcus",
+}
+REGION_COLOR_MAP: Dict[str, str] = {
+    "crown": "#3498db",
+    "rim": "#e67e22",
+    "sulcus": "#9b59b6",
+}
+
+HOTSPOT_FIG_BASE_WIDTH = 900
+HOTSPOT_FIG_BASE_HEIGHT = 750
+HOTSPOT_FIG_WIDTH = int(HOTSPOT_FIG_BASE_WIDTH * 1.5)
+
+
+def _region_display_name(region_key: str) -> str:
+    return REGION_DISPLAY_NAMES.get(region_key, region_key.capitalize())
+
+
+def _normalize_realization_key(value: RealizationType) -> str:
+    if isinstance(value, float) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _to_zero_based_index(raw_index: RealizationType, size: int) -> Optional[int]:
+    try:
+        idx_value = int(raw_index)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    arr = np.asarray([idx_value], dtype=int)
+    if arr.size == 0:
+        return None
+    if arr.min() == 1 and arr.max() <= size:
+        arr = arr - 1
+    idx = int(arr[0])
+    if 0 <= idx < size:
+        return idx
+    return None
+
+
+@dataclass
+class MeshContext:
+    vertices: np.ndarray
+    triangles: np.ndarray
+    tri_points: np.ndarray
+    tri_centers: np.ndarray
+    normals_unit: np.ndarray
+    epsilon: float
+    tissue_type: Optional[np.ndarray] = None
+
+
+def _build_mesh_context(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    tissue_type: Optional[np.ndarray] = None,
+) -> MeshContext:
+    triangles_int = triangles.astype(int)
+    if triangles_int.size > 0 and triangles_int.min() == 1 and triangles_int.max() <= vertices.shape[0]:
+        triangles_int = triangles_int - 1
+    tri_points = vertices[triangles_int]
+    tri_centers = tri_points.mean(axis=1)
+    v0 = tri_points[:, 0, :]
+    v1 = tri_points[:, 1, :]
+    v2 = tri_points[:, 2, :]
+    normals = np.cross(v1 - v0, v2 - v0)
+    norm = np.linalg.norm(normals, axis=1, keepdims=True)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        normals_unit = np.divide(normals, norm, out=np.zeros_like(normals), where=norm > 0)
+    e1 = np.linalg.norm(v1 - v0, axis=1)
+    e2 = np.linalg.norm(v2 - v1, axis=1)
+    e3 = np.linalg.norm(v0 - v2, axis=1)
+    edge_len_mean = np.mean((e1 + e2 + e3) / 3.0)
+    epsilon = 0.01 * edge_len_mean if np.isfinite(edge_len_mean) and edge_len_mean > 0 else 1e-6
+    return MeshContext(
+        vertices=vertices,
+        triangles=triangles_int,
+        tri_points=tri_points,
+        tri_centers=tri_centers,
+        normals_unit=normals_unit,
+        epsilon=float(epsilon),
+        tissue_type=tissue_type,
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def load_mesh_context(mesh_path: str) -> Optional[MeshContext]:
+    path = Path(mesh_path)
+    if not path.is_absolute():
+        path = DATA_ROOT / path
+    if not path.exists():
+        return None
+    suffix = path.suffix.lower()
+    tissue_type: Optional[np.ndarray] = None
+    if suffix == ".npz":
+            with np.load(path) as data:
+                if "vertices" not in data or "triangles" not in data:
+                    return None
+                vertices = data["vertices"]
+                triangles = data["triangles"]
+                try:
+                    tissue_type = data["tissue_type"]
+                except KeyError:
+                    tissue_type = None
+    elif suffix == ".npy":
+        data = np.load(path, allow_pickle=True)
+        if isinstance(data, dict) and "vertices" in data and "triangles" in data:
+            vertices = data["vertices"]
+            triangles = data["triangles"]
+            tissue_type = data.get("tissue_type") if isinstance(data, dict) else None
+        else:
+            return None
+    elif suffix in {".h5", ".hdf5"}:
+        try:
+            import h5py  # type: ignore
+        except ImportError:
+            return None
+        with h5py.File(path, "r") as handle:
+            if (
+                "/mesh/nodes/node_coord" not in handle
+                or "/mesh/elm/triangle_number_list" not in handle
+            ):
+                return None
+            vertices = handle["/mesh/nodes/node_coord"][...]
+            triangles = handle["/mesh/elm/triangle_number_list"][...]
+            tissue_type = (
+                handle["/mesh/elm/tri_tissue_type"][...].flatten()
+                if "/mesh/elm/tri_tissue_type" in handle
+                else None
+            )
+    else:
+        return None
+    if not isinstance(vertices, np.ndarray) or not isinstance(triangles, np.ndarray):
+        return None
+    return _build_mesh_context(vertices, triangles, tissue_type=tissue_type)
+
+
+def _triangle_vertices(mesh_ctx: MeshContext, tri_idx: int) -> Tuple[List[float], List[float], List[float], List[Optional[float]], List[Optional[float]], List[Optional[float]]]:
+    verts = mesh_ctx.tri_points[tri_idx] + mesh_ctx.normals_unit[tri_idx] * mesh_ctx.epsilon
+    xs = verts[:, 0].astype(float).tolist()
+    ys = verts[:, 1].astype(float).tolist()
+    zs = verts[:, 2].astype(float).tolist()
+    xs_loop = xs + [xs[0]]
+    ys_loop = ys + [ys[0]]
+    zs_loop = zs + [zs[0]]
+    return xs, ys, zs, xs_loop, ys_loop, zs_loop
+
+
+def _triangle_patch_traces(
+    mesh_ctx: MeshContext,
+    tri_idx: int,
+    color: str,
+    name: str,
+    legendgroup: Optional[str] = None,
+    opacity: float = 0.8,
+    showlegend: bool = True,
+) -> Tuple[go.Mesh3d, go.Scatter3d]:
+    xs, ys, zs, xs_loop, ys_loop, zs_loop = _triangle_vertices(mesh_ctx, tri_idx)
+    fill_trace = go.Mesh3d(
+        x=xs,
+        y=ys,
+        z=zs,
+        i=[0],
+        j=[1],
+        k=[2],
+        color=color,
+        opacity=opacity,
+        flatshading=True,
+        name=name,
+        showlegend=showlegend,
+        legendgroup=legendgroup,
+        hovertemplate=f"{name}<extra></extra>",
+    )
+    outline_trace = go.Scatter3d(
+        x=xs_loop,
+        y=ys_loop,
+        z=zs_loop,
+        mode="lines",
+        line=dict(color=color, width=5),
+        name=f"{name} outline",
+        showlegend=False,
+        legendgroup=legendgroup,
+        hoverinfo="skip",
+    )
+    return fill_trace, outline_trace
+
+
+def _experiment_color_map(experiments: Iterable[str]) -> Dict[str, str]:
+    try:
+        import plotly.express as px  # type: ignore
+
+        palette = px.colors.qualitative.Plotly + px.colors.qualitative.Set2 + px.colors.qualitative.T10
+    except Exception:
+        palette = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
+        ]
+    unique_experiments = sorted(set(experiments))
+    return {exp: palette[idx % len(palette)] for idx, exp in enumerate(unique_experiments)}
+
+
+def _build_hotspot_lookup(
+    df: pd.DataFrame,
+    experiments: Iterable[str],
+    hotspot_idx: RealizationType,
+    triangle_count: int,
+) -> Dict[Tuple[int, str, Optional[str]], int]:
+    subset = df[df["experiment_name"].isin(experiments)].copy()
+    if subset.empty:
+        return {}
+    subset = subset[subset["hotspot_idx"].notna() & subset["current_hotspot_idx"].notna()]
+    if subset.empty:
+        return {}
+    hotspot_numeric = pd.to_numeric(subset["hotspot_idx"], errors="coerce")
+    subset = subset[hotspot_numeric == pd.to_numeric(pd.Series([hotspot_idx]), errors="coerce").iloc[0]]
+    if subset.empty:
+        return {}
+    subset = subset.reset_index(drop=True)
+    subset["__order__"] = np.arange(len(subset))
+    group_cols = ["sequence_length", "experiment_name"]
+    if "realization_id" in subset.columns:
+        group_cols.append("realization_id")
+    agg = subset.sort_values("__order__").groupby(group_cols, as_index=False).last()
+    lookup: Dict[Tuple[int, str, Optional[str]], int] = {}
+    for _, row in agg.iterrows():
+        seq_val = int(row["sequence_length"])
+        exp_val = str(row["experiment_name"])
+        real_val = row.get("realization_id")
+        real_key = _normalize_realization_key(real_val) if pd.notna(real_val) else None
+        tri_idx = _to_zero_based_index(row["current_hotspot_idx"], triangle_count)
+        if tri_idx is None:
+            continue
+        lookup[(seq_val, exp_val, real_key)] = tri_idx
+    return lookup
+
+
+def _base_mesh_trace(mesh_ctx: MeshContext) -> go.Mesh3d:
+    return go.Mesh3d(
+        x=mesh_ctx.vertices[:, 0],
+        y=mesh_ctx.vertices[:, 1],
+        z=mesh_ctx.vertices[:, 2],
+        i=mesh_ctx.triangles[:, 0],
+        j=mesh_ctx.triangles[:, 1],
+        k=mesh_ctx.triangles[:, 2],
+        color="rgba(210,210,210,1.0)",
+        flatshading=False,
+        lighting=dict(ambient=0.25, diffuse=0.9, specular=0.05, roughness=0.9, fresnel=0.2),
+        lightposition=dict(x=100, y=200, z=100),
+        name="Cortical mesh",
+        hoverinfo="skip",
+        showscale=False,
+        opacity=1.0,
+    )
+
+
+def _format_hotspot_layout(fig: go.Figure, title: str) -> None:
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            aspectmode="data",
+            camera=dict(eye=dict(x=1.6, y=1.6, z=0.9)),
+        ),
+        margin=dict(l=0, r=0, b=0, t=50),
+        legend=dict(itemsizing="constant", groupclick="togglegroup"),
+        width=HOTSPOT_FIG_WIDTH,
+        height=HOTSPOT_FIG_BASE_HEIGHT,
+    )
+
+
+def _create_average_hotspot_figure(
+    mesh_ctx: MeshContext,
+    regions: List[Tuple[str, str, int]],
+) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(_base_mesh_trace(mesh_ctx))
+    for region_key, display_name, tri_idx in regions:
+        if tri_idx is None:
+            continue
+        color = REGION_COLOR_MAP.get(region_key, _hash_color(display_name))
+        legendgroup = f"region-{region_key}"
+        fill_trace, outline_trace = _triangle_patch_traces(
+            mesh_ctx,
+            tri_idx,
+            color=color,
+            name=f"{display_name} hotspot",
+            legendgroup=legendgroup,
+            opacity=0.72,
+            showlegend=True,
+        )
+        fig.add_trace(fill_trace)
+        fig.add_trace(outline_trace)
+        center = mesh_ctx.tri_centers[tri_idx] + mesh_ctx.normals_unit[tri_idx] * mesh_ctx.epsilon
+        fig.add_trace(
+            go.Scatter3d(
+                x=[float(center[0])],
+                y=[float(center[1])],
+                z=[float(center[2])],
+                mode="markers",
+                name=f"{display_name} center",
+                legendgroup=legendgroup,
+                marker=dict(size=6, symbol="x", color=color, line=dict(width=2, color="#111111")),
+                hovertemplate=f"{display_name} hotspot<extra></extra>",
+                showlegend=False,
+            )
+        )
+    _format_hotspot_layout(fig, "Target hotspots")
+    return fig
+
+
+def _create_realization_hotspot_figure(
+    mesh_ctx: MeshContext,
+    experiments: List[str],
+    seq_value: int,
+    realization_key: str,
+    realization_title: str,
+    region_payload: List[Tuple[str, str, int, Dict[Tuple[int, str, Optional[str]], int]]],
+) -> Tuple[go.Figure, Dict[str, List[str]]]:
+    fig = go.Figure()
+    fig.add_trace(_base_mesh_trace(mesh_ctx))
+    color_map = _experiment_color_map(experiments)
+    experiments_seen: Set[str] = set()
+    missing: Dict[str, List[str]] = {}
+    for region_key, display_name, tri_idx, lookup in region_payload:
+        color_region = REGION_COLOR_MAP.get(region_key, _hash_color(display_name))
+        legendgroup_region = f"region-{region_key}"
+        center = mesh_ctx.tri_centers[tri_idx] + mesh_ctx.normals_unit[tri_idx] * mesh_ctx.epsilon
+        fig.add_trace(
+            go.Scatter3d(
+                x=[float(center[0])],
+                y=[float(center[1])],
+                z=[float(center[2])],
+                mode="markers",
+                name=f"{display_name} target",
+                marker=dict(size=6, symbol="x", color=color_region, line=dict(width=2, color="#111111")),
+                legendgroup=legendgroup_region,
+                showlegend=True,
+                hovertemplate=f"{display_name} target<extra></extra>",
+            )
+        )
+        for experiment in experiments:
+            legendgroup_exp = f"exp-{experiment}"
+            key = (seq_value, experiment, realization_key)
+            tri_lookup = lookup.get(key)
+            if tri_lookup is None:
+                missing.setdefault(display_name, []).append(experiment)
+                continue
+            fill_trace, outline_trace = _triangle_patch_traces(
+                mesh_ctx,
+                tri_lookup,
+                color=color_map[experiment],
+                name=f"{experiment}",
+                legendgroup=legendgroup_exp,
+                opacity=0.85,
+                showlegend=experiment not in experiments_seen,
+            )
+            fill_trace.hovertemplate = (
+                f"{experiment}<br>{display_name} · seq {seq_value}<extra></extra>"
+            )
+            fig.add_trace(fill_trace)
+            fig.add_trace(outline_trace)
+            experiments_seen.add(experiment)
+    _format_hotspot_layout(fig, f"Realization {realization_title} · seq {seq_value}")
+    return fig, missing
 
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
@@ -297,16 +676,25 @@ def render_page() -> None:
     st.markdown(
         """
         <style>
+        :root {
+            --control-surface: ##0e1117;
+            --control-border: #2c3e55;
+            --control-foreground: #f1f5f9;
+        }
         .stApp {
-            background-color: #f8f9fa;
-            color: #2c3e50;
+            background-color: var(--control-surface);
+            color: var(--control-foreground);
         }
         div[data-testid="stSidebar"] {
-            background-color: #ffffff;
-            border-right: 1px solid #dee2e6;
+            background-color: var(--control-surface);
+            border-right: 1px solid var(--control-border);
         }
         div[data-testid="stSidebar"] * {
-            color: #2c3e50 !important;
+            color: var(--control-foreground) !important;
+        }
+        .main .block-container {
+            background-color: var(--control-surface);
+            color: var(--control-foreground);
         }
         .stSlider > div[data-baseweb="slider"] > div:nth-child(2) {
             background-color: #e9ecef;
@@ -316,7 +704,7 @@ def render_page() -> None:
             box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
         }
         h1, h2, h3 {
-            color: #2c3e50;
+            color: var(--control-foreground);
         }
         .stButton button {
             border-radius: 6px;
@@ -342,6 +730,10 @@ def render_page() -> None:
         unsafe_allow_html=True,
     )
     st.title("Congruence Score Explorer")
+
+    selected_hotspots: Dict[str, int] = {}
+    region_hotspot_frames: Dict[str, pd.DataFrame] = {}
+    mesh_file_path: str = st.session_state.get("mesh_file_path", DEFAULT_MESH_FILENAME)
 
     dataset_labels: List[Tuple[str, str]] = [
         ("Crown", "crown"),
@@ -477,6 +869,50 @@ def render_page() -> None:
                 value=False,
                 help="Display 95% confidence intervals around mean scores"
             )
+
+        with st.expander("🔥 Hotspot Selection", expanded=False):
+            st.caption("Configure the cortical mesh file and focus hotspots for 3D viewing.")
+            mesh_candidate = st.text_input(
+                "Mesh data file",
+                value=mesh_file_path,
+                help="Path to an .npz or .npy file (relative to data folder) containing 'vertices' and 'triangles' arrays",
+            ).strip()
+            mesh_file_path = mesh_candidate or DEFAULT_MESH_FILENAME
+            st.session_state["mesh_file_path"] = mesh_file_path
+
+            region_hotspot_frames = {}
+            region_hotspot_options: Dict[str, List[int]] = {}
+            for region_key, region_bundle in datasets_to_plot:
+                metric_df = region_bundle.get("GD")
+                if not isinstance(metric_df, pd.DataFrame):
+                    continue
+                filtered_df = metric_df[metric_df["experiment_name"].isin(experiment_selection)]
+                filtered_df = filtered_df[filtered_df["sequence_length"] <= length]
+                if filtered_df.empty:
+                    continue
+                region_hotspot_frames[region_key] = filtered_df
+                hotspot_vals = pd.to_numeric(filtered_df["hotspot_idx"], errors="coerce").dropna().astype(int)
+                unique_vals = sorted(set(int(val) for val in hotspot_vals.tolist()))
+                if unique_vals:
+                    region_hotspot_options[region_key] = unique_vals
+
+            if region_hotspot_options:
+                for region_key, options in region_hotspot_options.items():
+                    label = _region_display_name(region_key)
+                    select_key = f"hotspot_selection_{region_key}"
+                    default_value = options[0]
+                    current_value = st.session_state.get(select_key, default_value)
+                    if current_value not in options:
+                        current_value = default_value
+                    selected_value = st.selectbox(
+                        f"{label} hotspot idx",
+                        options,
+                        index=options.index(current_value),
+                        key=select_key,
+                    )
+                    selected_hotspots[region_key] = int(selected_value)
+            else:
+                st.caption("No hotspot metadata available for the current selection.")
             
         # Summary statistics at bottom
         st.divider()
@@ -621,15 +1057,98 @@ def render_page() -> None:
     }
     
     # Add tabs for different views
-    tab1, tab2 = st.tabs(["📊 Visualization", "📋 Data Summary"])
-    
-    with tab1:
+    region_hotspot_payload: List[Tuple[str, str, int, pd.DataFrame]] = []
+    for region_key, frame in region_hotspot_frames.items():
+        hotspot_choice = selected_hotspots.get(region_key)
+        if hotspot_choice is None:
+            continue
+        region_hotspot_payload.append((region_key, _region_display_name(region_key), hotspot_choice, frame))
+
+    tab_plot, tab_hotspot, tab_summary = st.tabs(["📊 Visualization", "🧠 Hotspot Map", "📋 Data Summary"])
+
+    with tab_plot:
         st.plotly_chart(plotly_fig, use_container_width=True, config=config)
         
         if empty_metrics:
             st.info("No data within the selected length for: " + ", ".join(empty_metrics))
     
-    with tab2:
+    with tab_hotspot:
+        mesh_ctx = load_mesh_context(mesh_file_path) if region_hotspot_payload else None
+        if not region_hotspot_payload:
+            st.info("Select at least one hotspot in the sidebar to visualize the surface.")
+        elif mesh_ctx is None:
+            st.info("Mesh file not found, missing required arrays, or h5py is not installed. Update the path or install h5py under 🔥 Hotspot Selection.")
+        else:
+            mesh_size = mesh_ctx.triangles.shape[0]
+            if realization_value is None:
+                targets = []
+                for region_key, display_name, hotspot_idx, _ in region_hotspot_payload:
+                    tri_idx = _to_zero_based_index(hotspot_idx, mesh_size)
+                    if tri_idx is not None:
+                        targets.append((region_key, display_name, tri_idx))
+                if not targets:
+                    st.warning("Hotspot indices are outside the mesh range.")
+                else:
+                    avg_fig = _create_average_hotspot_figure(mesh_ctx, targets)
+                    hotspot_config = {
+                        "displayModeBar": True,
+                        "displaylogo": False,
+                        "modeBarButtonsToRemove": ["hovercompare", "lasso3d", "select3d"],
+                    }
+                    st.plotly_chart(avg_fig, use_container_width=False, config=hotspot_config)
+                    st.caption("Average view shows the selected target hotspots across regions.")
+            else:
+                norm_real = _normalize_realization_key(realization_value)
+                region_lookup_payload: List[Tuple[str, str, int, Dict[Tuple[int, str, Optional[str]], int]]] = []
+                seq_candidates: Set[int] = set()
+                for region_key, display_name, hotspot_idx, frame in region_hotspot_payload:
+                    tri_idx = _to_zero_based_index(hotspot_idx, mesh_size)
+                    if tri_idx is None:
+                        continue
+                    lookup = _build_hotspot_lookup(frame, experiment_selection, hotspot_idx, mesh_size)
+                    region_lookup_payload.append((region_key, display_name, tri_idx, lookup))
+                    for (seq_val, _, real_key), _ in lookup.items():
+                        if real_key == norm_real:
+                            seq_candidates.add(seq_val)
+                if not region_lookup_payload:
+                    st.warning("Unable to build hotspot traces for the selected configuration.")
+                else:
+                    seq_options = sorted(seq_candidates)
+                    if not seq_options:
+                        st.info("No hotspot traces found for the chosen realization.")
+                    else:
+                        default_seq = seq_options[-1]
+                        seq_value = st.select_slider(
+                            "Sequence step",
+                            options=seq_options,
+                            value=default_seq,
+                            help="Select a sequence length to inspect algorithm hotspot predictions.",
+                        )
+                        realization_key = norm_real
+                        real_fig, missing_map = _create_realization_hotspot_figure(
+                            mesh_ctx,
+                            experiment_selection,
+                            seq_value,
+                            realization_key,
+                            realization_label,
+                            region_lookup_payload,
+                        )
+                        hotspot_config = {
+                            "displayModeBar": True,
+                            "displaylogo": False,
+                            "modeBarButtonsToRemove": ["hovercompare", "lasso3d", "select3d"],
+                        }
+                        st.plotly_chart(real_fig, use_container_width=False, config=hotspot_config)
+                        if missing_map:
+                            missing_lines = [
+                                f"{region}: {', '.join(sorted(set(exps)))}"
+                                for region, exps in missing_map.items()
+                                if exps
+                            ]
+                            if missing_lines:
+                                st.caption("No hotspot record for → " + " | ".join(missing_lines))
+
+    with tab_summary:
         st.subheader("Data Summary")
         
         for metric_label, region_data_list in payload:

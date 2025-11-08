@@ -2,3 +2,5 @@ streamlit
 pandas
 matplotlib
 plotly
+numpy
+h5py

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf>
+<Xdmf Version="2.0" xmlns:xi="http://www.w3.org/2001/XInclude">
+<Domain>
+<Grid CollectionType="Spatial" GridType="Collection" Name="Collection">
+	<Grid Name="tris" GridType="Uniform">
+		<Topology NumberOfElements="12667" TopologyType="Triangle" Name="Tri">
+			<DataItem Format="HDF" Dimensions="12667 3">
+			geo.hdf5:/mesh/elm/triangle_number_list
+			</DataItem>
+		</Topology>
+
+		<Geometry GeometryType="XYZ">
+			<DataItem Format="HDF" Dimensions="6564 3">
+			geo.hdf5:/mesh/nodes/node_coord
+			</DataItem>
+		</Geometry>
+
+		<Attribute Name="tissue_type" AttributeType="Scalar" Center="Cell">
+			<DataItem Format="HDF" Dimensions="12667 1">
+			geo.hdf5:/mesh/elm/tri_tissue_type
+			</DataItem>
+		</Attribute>
+
+	</Grid>
+
+</Grid>
+</Domain>
+</Xdmf>
