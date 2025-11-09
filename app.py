@@ -427,6 +427,214 @@ def _hash_color(label: str, region_color_offset: int = 0) -> str:
     return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
 
 
+def _region_color(label: str) -> str:
+    key = label.lower()
+    return REGION_COLOR_MAP.get(key, _hash_color(label))
+
+
+def _auc_trapezoid(y: np.ndarray, x: np.ndarray) -> float:
+    if y.size == 0 or x.size == 0:
+        return float("nan")
+    return float(np.trapz(y, x))
+
+
+def _steps_to_threshold_value(y: np.ndarray, x: np.ndarray, threshold: float) -> float:
+    if y.size == 0 or x.size == 0:
+        return float("nan")
+    mask = y <= threshold
+    if not np.any(mask):
+        return float("nan")
+    first_idx = int(np.argmax(mask))
+    return float(x[first_idx])
+
+
+def _hit_and_hold_first_step(
+    y: np.ndarray,
+    x: np.ndarray,
+    threshold: float,
+    window: int,
+) -> float:
+    if window <= 0 or y.size == 0 or x.size == 0 or y.size != x.size:
+        return float("nan")
+    if y.size < window:
+        return float("nan")
+    mask = y <= threshold
+    if not np.any(mask):
+        return float("nan")
+    kernel = np.ones(window, dtype=int)
+    conv = np.convolve(mask.astype(int), kernel, mode="valid")
+    idx_candidates = np.where(conv == window)[0]
+    if idx_candidates.size == 0:
+        return float("nan")
+    idx = int(idx_candidates[0])
+    idx = min(idx, x.size - 1)
+    return float(x[idx])
+
+
+def _summarize_gd_metrics(
+    df: pd.DataFrame,
+    region_label: str,
+    max_step: int,
+    auc_step_limit: int,
+    steps_threshold: float,
+    hnh_threshold: float,
+    hnh_window: int,
+) -> pd.DataFrame:
+    required_cols = {"experiment_name", "sequence_length", "score"}
+    if df.empty or not required_cols.issubset(df.columns):
+        return pd.DataFrame(columns=["region", "experiment", "realization", "auc", "steps_to_mm", "hnh_step"])
+
+    working = df.copy()
+    working = working.dropna(subset=["score", "sequence_length"])
+    if working.empty:
+        return pd.DataFrame(columns=["region", "experiment", "realization", "auc", "steps_to_mm", "hnh_step"])
+
+    working = working[working["sequence_length"] <= max_step]
+    if working.empty:
+        return pd.DataFrame(columns=["region", "experiment", "realization", "auc", "steps_to_mm", "hnh_step"])
+
+    realization_col = "__realization__"
+    if "realization_id" in working.columns:
+        working[realization_col] = working["realization_id"].apply(
+            lambda value: _normalize_realization_key(value) if pd.notna(value) else "Aggregate"
+        )
+    else:
+        working[realization_col] = "Aggregate"
+
+    rows = []
+    limit = max(1, min(int(auc_step_limit), int(max_step)))
+
+    for (experiment, realization), sub in working.groupby(["experiment_name", realization_col]):
+        sub = sub.sort_values("sequence_length")
+        x = sub["sequence_length"].to_numpy(dtype=float)
+        y = sub["score"].to_numpy(dtype=float)
+        if x.size == 0:
+            continue
+
+        mask_limit = x <= limit
+        auc_value = _auc_trapezoid(y[mask_limit], x[mask_limit]) if np.any(mask_limit) else float("nan")
+        steps_value = _steps_to_threshold_value(y, x, steps_threshold)
+        hnh_value = _hit_and_hold_first_step(y, x, hnh_threshold, hnh_window)
+
+        rows.append(
+            {
+                "region": region_label,
+                "experiment": str(experiment),
+                "realization": str(realization),
+                "auc": auc_value,
+                "steps_to_mm": steps_value,
+                "hnh_step": hnh_value,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _aggregate_metric_summary(metrics_df: pd.DataFrame, value_col: str) -> pd.DataFrame:
+    if metrics_df.empty or value_col not in metrics_df:
+        return pd.DataFrame(columns=["region", "experiment", "mean", "std", "count", "ci95"])
+
+    df_clean = metrics_df.dropna(subset=[value_col])
+    if df_clean.empty:
+        return pd.DataFrame(columns=["region", "experiment", "mean", "std", "count", "ci95"])
+
+    summary = (
+        df_clean.groupby(["region", "experiment"], as_index=False)
+        .agg(
+            mean=(value_col, "mean"),
+            std=(value_col, "std"),
+            count=(value_col, "count"),
+        )
+    )
+    summary["count"] = summary["count"].fillna(0).astype(int)
+    summary["std"] = summary["std"].fillna(0.0)
+    summary["sem"] = summary.apply(
+        lambda row: row["std"] / np.sqrt(row["count"]) if row["count"] > 0 else 0.0,
+        axis=1,
+    )
+    summary["ci95"] = summary["sem"] * 1.96
+    summary["ci95"] = summary["ci95"].fillna(0.0)
+    return summary.drop(columns=["sem"])
+
+
+def _build_meta_bar_figure(summary_df: pd.DataFrame, title: str, y_label: str) -> go.Figure:
+    fig = go.Figure()
+    fig.update_layout(
+        title=title,
+        barmode="group",
+        template="plotly_white",
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        margin=dict(l=70, r=30, t=70, b=70),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="rgba(0,0,0,0.12)",
+            borderwidth=1,
+            font=dict(color="#1f2933", size=11),
+        ),
+        font=dict(family="Segoe UI", size=13, color="#1f2933"),
+        hoverlabel=dict(bgcolor="#ffffff", font=dict(color="#1f2933")),
+    )
+    fig.update_xaxes(
+        title=dict(text="Experiment", font=dict(color="#1f2933", size=12)),
+        tickfont=dict(color="#1f2933", size=11),
+        linecolor="rgba(0,0,0,0.2)",
+        gridcolor="rgba(0,0,0,0.08)",
+    )
+    fig.update_yaxes(
+        title=dict(text=y_label, font=dict(color="#1f2933", size=12)),
+        tickfont=dict(color="#1f2933", size=11),
+        rangemode="tozero",
+        gridcolor="rgba(0,0,0,0.08)",
+        linecolor="rgba(0,0,0,0.2)",
+    )
+
+    if summary_df.empty:
+        return fig
+
+    summary_df = summary_df.sort_values(["experiment", "region"])
+
+    for idx, (region_label_value, region_df) in enumerate(summary_df.groupby("region", sort=False)):
+        region_label = str(region_label_value)
+        color = _region_color(region_label)
+        ci_data = region_df["ci95"].to_numpy(dtype=float)
+        count_data = region_df["count"].to_numpy(dtype=float)
+        std_data = region_df["std"].to_numpy(dtype=float)
+        if region_df.shape[0] > 0:
+            custom = np.column_stack([
+                region_df["region"].astype(str).to_numpy(dtype=object),
+                ci_data,
+                count_data,
+                std_data,
+            ])
+        else:
+            custom = None
+
+        fig.add_trace(
+            go.Bar(
+                name=region_label,
+                x=region_df["experiment"],
+                y=region_df["mean"],
+                offsetgroup=str(idx),
+                legendgroup=region_label,
+                marker=dict(color=color),
+                error_y=dict(type="data", array=ci_data, visible=True),
+                customdata=custom,
+                hovertemplate=(
+                    "<b>%{x}</b><br>Region: %{customdata[0]}<br>Mean: %{y:.3f}"
+                    "<br>95% CI: %{customdata[1]:.3f}<br>Samples: %{customdata[2]:.0f}<extra></extra>"
+                ),
+            )
+        )
+
+    return fig
+
+
 def plot_score_results(
     df: pd.DataFrame,
     length: int,
@@ -672,7 +880,7 @@ def load_dataset(dataset_key: str) -> Dict[str, object]:
 
 
 def render_page() -> None:
-    st.set_page_config(page_title="Congruence Score Explorer", layout="wide")
+    st.set_page_config(page_title="TMS Mapping Congruence Explorer", layout="wide")
     st.markdown(
         """
         <style>
@@ -729,7 +937,7 @@ def render_page() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.title("Congruence Score Explorer")
+    st.title("TMS Mapping Congruence Explorer")
 
     selected_hotspots: Dict[str, int] = {}
     region_hotspot_frames: Dict[str, pd.DataFrame] = {}
@@ -957,6 +1165,12 @@ def render_page() -> None:
         st.warning("No data available for the current selection.")
         return
 
+    meta_region_frames: List[Tuple[str, pd.DataFrame, int]] = []
+    for metric_label, region_data_list in payload:
+        if metric_label == "GD":
+            meta_region_frames = [(region_key, region_df, color_offset) for region_key, region_df, color_offset in region_data_list]
+            break
+
     rows = len(payload)
     subplot_titles = [f"{metric_label} · {realization_label}" for metric_label, _ in payload]
     plotly_fig = make_subplots(
@@ -1064,7 +1278,12 @@ def render_page() -> None:
             continue
         region_hotspot_payload.append((region_key, _region_display_name(region_key), hotspot_choice, frame))
 
-    tab_plot, tab_hotspot, tab_summary = st.tabs(["📊 Visualization", "🧠 Hotspot Map", "📋 Data Summary"])
+    tab_plot, tab_hotspot, tab_summary, tab_meta = st.tabs([
+        "📊 Visualization",
+        "🧠 Hotspot Map",
+        "📋 Data Summary",
+        "🧮 Meta Analysis",
+    ])
 
     with tab_plot:
         st.plotly_chart(plotly_fig, use_container_width=True, config=config)
@@ -1193,6 +1412,155 @@ def render_page() -> None:
                     
                     if compare_regions and region_key == "crown":
                         st.divider()
+
+    with tab_meta:
+        st.subheader("Meta Analysis")
+
+        if not meta_region_frames:
+            st.info("Meta analysis is available when GD results are loaded.")
+        else:
+            score_min_list: List[float] = []
+            score_max_list: List[float] = []
+            for _, gd_frame, _ in meta_region_frames:
+                if not gd_frame.empty:
+                    series = gd_frame["score"].dropna()
+                    if not series.empty:
+                        score_min_list.append(float(series.min()))
+                        score_max_list.append(float(series.max()))
+
+            score_min = min(score_min_list) if score_min_list else 0.0
+            score_max = max(score_max_list) if score_max_list else 25.0
+            if score_min == score_max:
+                score_max = score_min + 1.0
+
+            threshold_min = float(np.floor(max(0.0, score_min)))
+            threshold_max = float(np.ceil(score_max))
+            if threshold_max <= threshold_min:
+                threshold_max = threshold_min + 1.0
+
+            default_steps_threshold = float(min(max(10.0, threshold_min), threshold_max))
+            default_hnh_threshold = float(min(max(5.0, threshold_min), threshold_max))
+
+            max_step_limit = max(1, int(length))
+            default_auc_limit = min(max_step_limit, 50)
+            window_max = max(1, min(20, max_step_limit))
+            default_hnh_window = min(window_max, 8)
+
+            meta_config = {
+                "displaylogo": False,
+                "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+            }
+
+            def _meta_summary(value_col: str, auc_limit: int, steps_thr: float, hnh_thr: float, hnh_win: int) -> pd.DataFrame:
+                frames: List[pd.DataFrame] = []
+                for region_key, gd_frame, _ in meta_region_frames:
+                    region_label = _region_display_name(region_key)
+                    metrics_df = _summarize_gd_metrics(
+                        gd_frame,
+                        region_label=region_label,
+                        max_step=max_step_limit,
+                        auc_step_limit=auc_limit,
+                        steps_threshold=steps_thr,
+                        hnh_threshold=hnh_thr,
+                        hnh_window=hnh_win,
+                    )
+                    if not metrics_df.empty:
+                        frames.append(metrics_df)
+                if not frames:
+                    return pd.DataFrame()
+                combined = pd.concat(frames, ignore_index=True)
+                return _aggregate_metric_summary(combined, value_col)
+
+            auc_state_default = int(st.session_state.get("meta_auc_limit", default_auc_limit))
+            steps_state_default = float(st.session_state.get("meta_steps_threshold", default_steps_threshold))
+            hnh_threshold_state = float(st.session_state.get("meta_hnh_threshold", default_hnh_threshold))
+            hnh_window_state = int(st.session_state.get("meta_hnh_window", default_hnh_window))
+
+            st.markdown("**AUC**")
+            auc_step_limit = st.slider(
+                "AUC integration limit (steps)",
+                min_value=1,
+                max_value=max_step_limit,
+                value=min(max_step_limit, max(1, auc_state_default)),
+                step=1,
+                key="meta_auc_limit",
+                help="Upper bound on steps when computing the area under the GD curve.",
+            )
+
+            steps_for_auc = float(st.session_state.get("meta_steps_threshold", default_steps_threshold))
+            hnh_thr_for_auc = float(st.session_state.get("meta_hnh_threshold", default_hnh_threshold))
+            hnh_window_for_auc = int(st.session_state.get("meta_hnh_window", default_hnh_window))
+
+            auc_summary = _meta_summary("auc", auc_step_limit, steps_for_auc, hnh_thr_for_auc, hnh_window_for_auc)
+            if auc_summary.empty:
+                st.info("AUC data is not available with the selected parameters.")
+            else:
+                auc_fig = _build_meta_bar_figure(
+                    auc_summary,
+                    title=f"AUC (0-{auc_step_limit} steps)",
+                    y_label="Area under curve",
+                )
+                st.plotly_chart(auc_fig, use_container_width=True, config=meta_config)
+
+            st.markdown("**Steps to Threshold**")
+            steps_threshold = st.slider(
+                "Steps-to-threshold (mm)",
+                min_value=threshold_min,
+                max_value=threshold_max,
+                value=float(np.clip(steps_state_default, threshold_min, threshold_max)),
+                step=0.5,
+                key="meta_steps_threshold",
+                help="Threshold for GD distance when computing steps-to-mm.",
+            )
+
+            current_auc_limit = int(st.session_state.get("meta_auc_limit", auc_step_limit))
+            current_hnh_threshold = float(st.session_state.get("meta_hnh_threshold", default_hnh_threshold))
+            current_hnh_window = int(st.session_state.get("meta_hnh_window", default_hnh_window))
+
+            steps_summary = _meta_summary("steps_to_mm", current_auc_limit, steps_threshold, current_hnh_threshold, current_hnh_window)
+            if steps_summary.empty:
+                st.info("Steps-to-threshold data is not available with the selected parameters.")
+            else:
+                steps_fig = _build_meta_bar_figure(
+                    steps_summary,
+                    title=f"Steps to <= {steps_threshold:.2f} mm",
+                    y_label="Steps",
+                )
+                st.plotly_chart(steps_fig, use_container_width=True, config=meta_config)
+
+            st.markdown("**Hit-and-Hold**")
+            col_thr, col_win = st.columns([2, 1])
+            with col_thr:
+                hnh_threshold = st.slider(
+                    "HnH threshold (mm)",
+                    min_value=threshold_min,
+                    max_value=threshold_max,
+                    value=float(np.clip(hnh_threshold_state, threshold_min, threshold_max)),
+                    step=0.5,
+                    key="meta_hnh_threshold",
+                    help="Threshold for GD distance when evaluating hit-and-hold.",
+                )
+            with col_win:
+                hnh_window = st.slider(
+                    "HnH window size (steps)",
+                    min_value=1,
+                    max_value=window_max,
+                    value=int(np.clip(hnh_window_state, 1, window_max)),
+                    step=1,
+                    key="meta_hnh_window",
+                    help="Number of consecutive steps that must satisfy the threshold.",
+                )
+
+            hnh_summary = _meta_summary("hnh_step", current_auc_limit, steps_threshold, hnh_threshold, hnh_window)
+            if hnh_summary.empty:
+                st.info("Hit-and-hold data is not available with the selected parameters.")
+            else:
+                hnh_fig = _build_meta_bar_figure(
+                    hnh_summary,
+                    title=f"Hit-and-Hold (threshold {hnh_threshold:.2f} mm, window {hnh_window})",
+                    y_label="Steps",
+                )
+                st.plotly_chart(hnh_fig, use_container_width=True, config=meta_config)
 
     # st.caption(
     #     "This dashboard mirrors the controls of the local Tkinter app so collaborators can explore results without a Python environment."
