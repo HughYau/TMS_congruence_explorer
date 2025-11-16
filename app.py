@@ -842,31 +842,86 @@ def _collect_metadata(df_list: Iterable[pd.DataFrame]) -> Tuple[List[str], List[
     return experiments, realizations, seq_min, seq_max
 
 
-def _dataset_config() -> Dict[str, List[Tuple[str, str]]]:
+def _dataset_config() -> Dict[str, Dict[str, Dict[str, object]]]:
+    """Return the mapping of available datasets grouped by region and hotspot."""
+
     return {
-        "crown": [
-            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_crown.csv"),
-            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_crown.csv"),
-        ],
-        "rim": [
-            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_rim.csv"),
-            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_rim.csv"),
-        ],
-        "sulcus": [
-            ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_sulcus.csv"),
-            ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_sulcus.csv"),
-        ],
+        "crown": {
+            "default": {
+                "label": "Hotspot #9712",
+                "hotspot_idx": 9712,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_crown.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_crown.csv"),
+                ],
+            },
+            "hs412": {
+                "label": "Hotspot #412",
+                "hotspot_idx": 412,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_412_crown.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_412_crown.csv"),
+                ],
+            },
+        },
+        "rim": {
+            "default": {
+                "label": "Hotspot #5999",
+                "hotspot_idx": 5999,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_rim.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_rim.csv"),
+                ],
+            },
+            "hs5983": {
+                "label": "Hotspot #5983",
+                "hotspot_idx": 5983,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_5983_rim.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_5983_rim.csv"),
+                ],
+            },
+        },
+        "sulcus": {
+            "default": {
+                "label": "Hotspot #5575",
+                "hotspot_idx": 5575,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_sulcus.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_sulcus.csv"),
+                ],
+            },
+            "hs10346": {
+                "label": "Hotspot #10346",
+                "hotspot_idx": 10346,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_10346_sulcus.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_10346_sulcus.csv"),
+                ],
+            },
+        },
     }
 
 
 @st.cache_data(show_spinner=False)
 def load_dataset(dataset_key: str) -> Dict[str, object]:
     collections = _dataset_config()
-    if dataset_key not in collections:
-        raise KeyError(f"Unknown dataset key: {dataset_key}")
+    if ":" in dataset_key:
+        region_key, variant_key = dataset_key.split(":", 1)
+    else:
+        region_key, variant_key = dataset_key, "default"
+
+    region_block = collections.get(region_key)
+    if region_block is None:
+        raise KeyError(f"Unknown region key: {region_key}")
+
+    variant_config = region_block.get(variant_key)
+    if variant_config is None:
+        available = ", ".join(region_block.keys())
+        raise KeyError(f"Unknown dataset variant '{variant_key}' for region '{region_key}'. Available: {available}")
 
     frames: Dict[str, pd.DataFrame] = {}
-    for metric_label, filename in collections[dataset_key]:
+    for metric_label, filename in variant_config["metrics"]:
         csv_path = DATA_ROOT / filename
         frames[metric_label] = pd.read_csv(csv_path)
 
@@ -876,6 +931,50 @@ def load_dataset(dataset_key: str) -> Dict[str, object]:
     bundle["all_realizations"] = realizations
     bundle["seq_min"] = seq_min
     bundle["seq_max"] = seq_max
+    bundle["region_key"] = region_key
+    bundle["variant_key"] = variant_key
+    bundle["variant_label"] = str(variant_config.get("label", variant_key))
+    bundle["hotspot_idx"] = variant_config.get("hotspot_idx")
+    bundle["dataset_identifier"] = f"{region_key}:{variant_key}"
+    bundle["variant_sources"] = [variant_key]
+    return bundle
+
+
+@st.cache_data(show_spinner=False)
+def load_aggregated_dataset(region_key: str, variant_keys: Tuple[str, ...]) -> Dict[str, object]:
+    if not variant_keys:
+        raise ValueError("variant_keys must include at least one hotspot key")
+    normalized_keys = tuple(sorted(variant_keys))
+    metric_frames: Dict[str, List[pd.DataFrame]] = {}
+    bundles: List[Dict[str, object]] = []
+
+    for variant_key in normalized_keys:
+        bundle = load_dataset(f"{region_key}:{variant_key}")
+        bundles.append(bundle)
+        for metric_label, metric_df in bundle.items():
+            if isinstance(metric_df, pd.DataFrame):
+                df_copy = metric_df.copy()
+                df_copy["hotspot_variant"] = variant_key
+                df_copy["hotspot_label"] = str(bundle.get("variant_label", variant_key))
+                metric_frames.setdefault(metric_label, []).append(df_copy)
+
+    aggregated_metrics: Dict[str, pd.DataFrame] = {}
+    for metric_label, frames in metric_frames.items():
+        aggregated_metrics[metric_label] = pd.concat(frames, ignore_index=True)
+
+    experiments, realizations, seq_min, seq_max = _collect_metadata(aggregated_metrics.values())
+
+    bundle: Dict[str, object] = {metric: df for metric, df in aggregated_metrics.items()}
+    bundle["all_experiments"] = experiments
+    bundle["all_realizations"] = realizations
+    bundle["seq_min"] = seq_min
+    bundle["seq_max"] = seq_max
+    bundle["region_key"] = region_key
+    bundle["variant_key"] = "__aggregate__"
+    bundle["variant_label"] = "Aggregate all hotspots"
+    bundle["hotspot_idx"] = None
+    bundle["dataset_identifier"] = f"{region_key}:aggregate"
+    bundle["variant_sources"] = list(normalized_keys)
     return bundle
 
 
@@ -939,6 +1038,7 @@ def render_page() -> None:
     )
     st.title("TMS Mapping Congruence Explorer")
 
+    dataset_collections = _dataset_config()
     selected_hotspots: Dict[str, int] = {}
     region_hotspot_frames: Dict[str, pd.DataFrame] = {}
     mesh_file_path: str = st.session_state.get("mesh_file_path", DEFAULT_MESH_FILENAME)
@@ -950,58 +1050,112 @@ def render_page() -> None:
     ]
     # Initialize to satisfy static analyzers; will be set based on selection
     data_bundle: Dict[str, object] = {}
+    selected_region_variants: Dict[str, str] = {}
+    dataset_key_slug = "unselected"
 
     with st.sidebar:
         st.header("🎛️ Controls")
         
         # Dataset selection with expander for cleaner look
         with st.expander("📊 Dataset Selection", expanded=True):
-            # Comparison mode: show all three regions together
             compare_regions = st.checkbox(
                 "🔄 Compare all regions (Crown/Rim/Sulcus)",
                 value=False,
                 help="Enable this to overlay Crown, Rim and Sulcus data for the same experiments"
             )
-            
+
+            dataset_map = {label: key for label, key in dataset_labels}
+
             if not compare_regions:
                 dataset_display = st.selectbox(
                     "Region",
                     options=[label for label, _ in dataset_labels],
                     index=0,
-                    help="Select the brain region to analyze"
+                    help="Select the brain region to analyze",
                 )
-                dataset_map = {label: key for label, key in dataset_labels}
-                dataset_key = dataset_map[dataset_display]
-                data_bundle = load_dataset(dataset_key)
-                datasets_to_plot = [(dataset_key, data_bundle)]
+                region_key = dataset_map[dataset_display]
+                region_variants = dataset_collections.get(region_key, {})
+                if not region_variants:
+                    st.error("No hotspot datasets are registered for this region.")
+                    return
+                variant_keys = list(region_variants.keys())
+                aggregate_key = f"aggregate_hotspots_{region_key}"
+                aggregate_all = st.checkbox(
+                    "Aggregate all hotspots",
+                    value=bool(st.session_state.get(aggregate_key, False)),
+                    key=aggregate_key,
+                    help="Combine every hotspot in this region into a single aggregate dataset",
+                )
 
-                experiments = cast(List[str], data_bundle["all_experiments"]) if "all_experiments" in data_bundle else []
+                if aggregate_all:
+                    variant_key = "__aggregate__"
+                    dataset_identifier = f"{region_key}:aggregate"
+                    data_bundle = load_aggregated_dataset(region_key, tuple(sorted(variant_keys)))
+                else:
+                    variant_select_key = f"hotspot_variant_{region_key}"
+                    cached_variant = st.session_state.get(variant_select_key, variant_keys[0])
+                    if cached_variant not in variant_keys:
+                        cached_variant = variant_keys[0]
+                    variant_idx = variant_keys.index(cached_variant)
+                    variant_key = st.selectbox(
+                        "Hotspot",
+                        options=variant_keys,
+                        index=variant_idx,
+                        format_func=lambda key, rv=region_variants: rv[key]["label"],
+                        key=variant_select_key,
+                        help="Pick one hotspot dataset to visualize",
+                    )
+                    dataset_identifier = f"{region_key}:{variant_key}"
+                    data_bundle = load_dataset(dataset_identifier)
+
+                datasets_to_plot = [(region_key, data_bundle)]
+                selected_region_variants[region_key] = variant_key
+
+                experiments = cast(List[str], data_bundle.get("all_experiments", []))
                 all_realizations_list = cast(List[RealizationType], data_bundle.get("all_realizations", []))
                 seq_min = int(cast(int, data_bundle.get("seq_min", 1)))
                 seq_max = int(cast(int, data_bundle.get("seq_max", 100)))
+                dataset_key_slug = str(data_bundle.get("dataset_identifier", dataset_identifier)).replace(":", "_")
             else:
                 st.info("📊 Comparing Crown, Rim and Sulcus regions")
-                # Load all three datasets
-                crown_bundle = load_dataset("crown")
-                rim_bundle = load_dataset("rim")
-                sulcus_bundle = load_dataset("sulcus")
-                datasets_to_plot = [("crown", crown_bundle), ("rim", rim_bundle), ("sulcus", sulcus_bundle)]
-                dataset_key = "all_regions"
-
-                # Union of experiments across regions
-                exp_sets = []
-                real_sets = []
+                datasets_to_plot = []
+                exp_sets: List[Set[str]] = []
+                real_sets: List[Set[RealizationType]] = []
                 seq_mins: List[int] = []
                 seq_maxs: List[int] = []
-                for _, bundle in datasets_to_plot:
-                    exp_sets.append(set(cast(List[str], bundle.get("all_experiments", []))))
-                    real_sets.append(set(cast(List[RealizationType], bundle.get("all_realizations", []))))
-                    if "seq_min" in bundle:
-                        seq_mins.append(int(cast(int, bundle["seq_min"])))
-                    if "seq_max" in bundle:
-                        seq_maxs.append(int(cast(int, bundle["seq_max"])))
+
+                for display_name, region_key in dataset_labels:
+                    region_variants = dataset_collections.get(region_key, {})
+                    if not region_variants:
+                        continue
+                    variant_keys = list(region_variants.keys())
+                    compare_select_key = f"compare_variant_{region_key}"
+                    cached_variant = st.session_state.get(compare_select_key, variant_keys[0])
+                    if cached_variant not in variant_keys:
+                        cached_variant = variant_keys[0]
+                    variant_idx = variant_keys.index(cached_variant)
+                    variant_key = st.selectbox(
+                        f"{display_name} hotspot",
+                        options=variant_keys,
+                        index=variant_idx,
+                        format_func=lambda key, rv=region_variants: rv[key]["label"],
+                        key=compare_select_key,
+                    )
+                    dataset_identifier = f"{region_key}:{variant_key}"
+                    region_bundle = load_dataset(dataset_identifier)
+                    datasets_to_plot.append((region_key, region_bundle))
+                    selected_region_variants[region_key] = variant_key
+
+                    exp_sets.append(set(cast(List[str], region_bundle.get("all_experiments", []))))
+                    real_sets.append(set(cast(List[RealizationType], region_bundle.get("all_realizations", []))))
+                    if "seq_min" in region_bundle:
+                        seq_mins.append(int(cast(int, region_bundle["seq_min"])))
+                    if "seq_max" in region_bundle:
+                        seq_maxs.append(int(cast(int, region_bundle["seq_max"])))
+
+                dataset_key_slug = "all_regions"
                 experiments = sorted(set().union(*exp_sets)) if exp_sets else []
-                all_realizations_list = sorted(set().union(*real_sets), key=lambda v: str(v)) if real_sets else []
+                all_realizations_list = sorted(set().union(*real_sets), key=lambda value: str(value)) if real_sets else []
                 seq_min = min(seq_mins) if seq_mins else 1
                 seq_max = max(seq_maxs) if seq_maxs else 100
 
@@ -1011,7 +1165,6 @@ def render_page() -> None:
 
         # Experiment filtering with quick actions
         with st.expander("🧪 Experiment Filters", expanded=True):
-            # Initialize or sanitize session state for current experiment list
             if "experiment_selection" not in st.session_state:
                 st.session_state["experiment_selection"] = experiments.copy()
             else:
@@ -1032,7 +1185,7 @@ def render_page() -> None:
                 "Experiments",
                 options=experiments,
                 key="experiment_selection",
-                help=f"Select from {len(experiments)} available experiments"
+                help=f"Select from {len(experiments)} available experiments",
             )
 
             if not experiment_selection:
@@ -1050,7 +1203,7 @@ def render_page() -> None:
                     max_value=seq_max,
                     value=seq_max,
                     step=1,
-                    help="Adjust the maximum sequence length to display"
+                    help="Adjust the maximum sequence length to display",
                 )
             with col2:
                 st.metric("Range", f"{seq_min}-{length}", delta=None)
@@ -1066,7 +1219,7 @@ def render_page() -> None:
             realization_label = st.selectbox(
                 "Select realization",
                 options=realization_labels,
-                help="View individual realizations or averaged results"
+                help="View individual realizations or averaged results",
             )
             realization_value = realization_lookup[realization_label]
 
@@ -1138,18 +1291,22 @@ def render_page() -> None:
         return
     
     # Collect payload based on comparison mode
-    payload: List[Tuple[str, List[Tuple[str, pd.DataFrame, int]]]] = []
+    payload: List[Tuple[str, List[Tuple[str, str, str, pd.DataFrame, int]]]] = []
+    region_color_offsets = {"crown": 1, "rim": 2, "sulcus": 3}
     
     if compare_regions:
         # Comparison mode: combine data from both regions
         for metric_label in metrics:
-            region_data: List[Tuple[str, pd.DataFrame, int]] = []
+            region_data: List[Tuple[str, str, str, pd.DataFrame, int]] = []
             for idx, (region_key, region_bundle) in enumerate(datasets_to_plot, start=1):
                 metric_df = region_bundle.get(metric_label)
                 if isinstance(metric_df, pd.DataFrame):
                     filtered_df = metric_df[metric_df["experiment_name"].isin(experiment_selection)]
                     if not filtered_df.empty:
-                        region_data.append((region_key, filtered_df, idx))
+                        variant_key = str(selected_region_variants.get(region_key, region_bundle.get("variant_key", "default")))
+                        variant_label = str(region_bundle.get("variant_label", variant_key))
+                        color_offset = region_color_offsets.get(region_key, idx)
+                        region_data.append((region_key, variant_key, variant_label, filtered_df, color_offset))
             if region_data:
                 payload.append((metric_label, region_data))
     else:
@@ -1159,17 +1316,14 @@ def render_page() -> None:
             if isinstance(metric_df, pd.DataFrame):
                 filtered_df = metric_df[metric_df["experiment_name"].isin(experiment_selection)]
                 if not filtered_df.empty:
-                    payload.append((metric_label, [(dataset_key, filtered_df, 0)]))
+                    region_key = str(data_bundle.get("region_key", "region"))
+                    variant_key = str(data_bundle.get("variant_key", "default"))
+                    variant_label = str(data_bundle.get("variant_label", variant_key))
+                    payload.append((metric_label, [(region_key, variant_key, variant_label, filtered_df, 0)]))
 
     if not payload:
         st.warning("No data available for the current selection.")
         return
-
-    meta_region_frames: List[Tuple[str, pd.DataFrame, int]] = []
-    for metric_label, region_data_list in payload:
-        if metric_label == "GD":
-            meta_region_frames = [(region_key, region_df, color_offset) for region_key, region_df, color_offset in region_data_list]
-            break
 
     rows = len(payload)
     subplot_titles = [f"{metric_label} · {realization_label}" for metric_label, _ in payload]
@@ -1184,10 +1338,10 @@ def render_page() -> None:
     legend_seen: Set[str] = set()
     
     for idx, (metric_label, region_data_list) in enumerate(payload, start=1):
-        for region_key, filtered_df, color_offset in region_data_list:
+        for region_key, variant_key, variant_label, filtered_df, color_offset in region_data_list:
             region_suffix = ""
             if compare_regions:
-                region_suffix = f" ({region_key.capitalize()})"
+                region_suffix = f" ({_region_display_name(region_key)} · {variant_label})"
             
             rendered = plot_score_results(
                 filtered_df,
@@ -1203,7 +1357,8 @@ def render_page() -> None:
                 region_color_offset=color_offset,
             )
             if not rendered:
-                empty_metrics.append(f"{metric_label} ({region_key})")
+                descriptor = f"{_region_display_name(region_key)} · {variant_label}" if compare_regions else variant_label
+                empty_metrics.append(f"{metric_label} ({descriptor})")
 
     for idx in range(1, rows + 1):
         plotly_fig.update_xaxes(
@@ -1263,7 +1418,7 @@ def render_page() -> None:
         "modeBarButtonsToRemove": ["select2d", "lasso2d", "autoScale2d"],
         "toImageButtonOptions": {
             "format": "png",
-            "filename": f"congruence_{dataset_key}_{realization_label.replace(' ', '_')}",
+            "filename": f"congruence_{dataset_key_slug}_{realization_label.replace(' ', '_')}",
             "height": plot_height,
             "width": 1400,
             "scale": 2,
@@ -1373,9 +1528,10 @@ def render_page() -> None:
         for metric_label, region_data_list in payload:
             with st.expander(f"📈 {metric_label} Statistics", expanded=True):
                 # Calculate summary statistics
-                for region_key, filtered_df, _ in region_data_list:
+                for region_key, variant_key, variant_label, filtered_df, _ in region_data_list:
+                    display_region = _region_display_name(region_key)
                     if compare_regions:
-                        st.markdown(f"**{region_key.capitalize()}**")
+                        st.markdown(f"**{display_region} · {variant_label}**")
                     
                     summary_data = []
                     for exp_name in experiment_selection:
@@ -1402,11 +1558,11 @@ def render_page() -> None:
                         
                         # Download button for CSV
                         csv = summary_df.to_csv(index=False).encode('utf-8')
-                        file_suffix = f"_{region_key}" if compare_regions else ""
+                        file_suffix = f"_{region_key}_{variant_key}" if compare_regions else ""
                         st.download_button(
                             label=f"📥 Download {metric_label}{file_suffix} Summary (CSV)",
                             data=csv,
-                            file_name=f"{metric_label}_summary{file_suffix}_{dataset_key}.csv",
+                            file_name=f"{metric_label}_summary{file_suffix}_{dataset_key_slug}.csv",
                             mime="text/csv",
                         )
                     
@@ -1416,12 +1572,59 @@ def render_page() -> None:
     with tab_meta:
         st.subheader("Meta Analysis")
 
+        def _collect_meta_frames(hotspot_filters: Dict[str, List[str]]) -> List[Tuple[str, str, str, pd.DataFrame]]:
+            frames: List[Tuple[str, str, str, pd.DataFrame]] = []
+            for region_key, variant_keys in hotspot_filters.items():
+                for variant_key in variant_keys:
+                    dataset_identifier = f"{region_key}:{variant_key}"
+                    bundle = load_dataset(dataset_identifier)
+                    metric_df = bundle.get("GD")
+                    if not isinstance(metric_df, pd.DataFrame):
+                        continue
+                    filtered_df = metric_df[metric_df["experiment_name"].isin(experiment_selection)]
+                    filtered_df = filtered_df[filtered_df["sequence_length"] <= length]
+                    if filtered_df.empty:
+                        continue
+                    variant_label = str(bundle.get("variant_label", variant_key))
+                    frames.append((region_key, variant_key, variant_label, filtered_df))
+            return frames
+
+        if compare_regions:
+            st.caption("Choose which hotspots contribute to the region-level averages below.")
+            hotspot_filters: Dict[str, List[str]] = {}
+            with st.expander("Hotspot averaging controls", expanded=False):
+                for _, region_key in dataset_labels:
+                    region_variants = dataset_collections.get(region_key, {})
+                    if not region_variants:
+                        continue
+                    variant_keys = list(region_variants.keys())
+                    multiselect_key = f"meta_hotspots_{region_key}"
+                    selected_keys = st.multiselect(
+                        _region_display_name(region_key),
+                        options=variant_keys,
+                        default=variant_keys,
+                        format_func=lambda key, rv=region_variants: rv[key]["label"],
+                        key=multiselect_key,
+                        help="Leave all selected to average across every hotspot for this region.",
+                    )
+                    hotspot_filters[region_key] = selected_keys or variant_keys
+        else:
+            region_key = str(data_bundle.get("region_key", "region"))
+            variant_sources = data_bundle.get("variant_sources")
+            if isinstance(variant_sources, list) and variant_sources:
+                source_keys = [str(value) for value in variant_sources]
+            else:
+                source_keys = [str(data_bundle.get("variant_key", "default"))]
+            hotspot_filters = {region_key: source_keys}
+
+        meta_region_frames = _collect_meta_frames(hotspot_filters)
+
         if not meta_region_frames:
             st.info("Meta analysis is available when GD results are loaded.")
         else:
             score_min_list: List[float] = []
             score_max_list: List[float] = []
-            for _, gd_frame, _ in meta_region_frames:
+            for _, _, _, gd_frame in meta_region_frames:
                 if not gd_frame.empty:
                     series = gd_frame["score"].dropna()
                     if not series.empty:
@@ -1453,7 +1656,7 @@ def render_page() -> None:
 
             def _meta_summary(value_col: str, auc_limit: int, steps_thr: float, hnh_thr: float, hnh_win: int) -> pd.DataFrame:
                 frames: List[pd.DataFrame] = []
-                for region_key, gd_frame, _ in meta_region_frames:
+                for region_key, _, _, gd_frame in meta_region_frames:
                     region_label = _region_display_name(region_key)
                     metrics_df = _summarize_gd_metrics(
                         gd_frame,
