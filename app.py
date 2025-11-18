@@ -848,11 +848,11 @@ def _dataset_config() -> Dict[str, Dict[str, Dict[str, object]]]:
     return {
         "crown": {
             "default": {
-                "label": "Hotspot #9712",
-                "hotspot_idx": 9712,
+                "label": "Hotspot #397",
+                "hotspot_idx": 397,
                 "metrics": [
-                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_crown.csv"),
-                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_crown.csv"),
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_397_crown.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_397_crown.csv"),
                 ],
             },
             "hs412": {
@@ -861,6 +861,14 @@ def _dataset_config() -> Dict[str, Dict[str, Dict[str, object]]]:
                 "metrics": [
                     ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_412_crown.csv"),
                     ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_412_crown.csv"),
+                ],
+            },
+            'hs9712':{
+                "label": "Hotspot #9712",
+                "hotspot_idx": 9712,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_9712_rim.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_9712_rim.csv"),
                 ],
             },
         },
