@@ -17,13 +17,13 @@ RealizationType = Union[str, float, int]
 DEFAULT_MESH_FILENAME = "geo.hdf5"
 REGION_DISPLAY_NAMES: Dict[str, str] = {
     "crown": "Crown",
-    "rim": "Rim",
-    "sulcus": "Sulcus",
+    "wall": "Wall",
+    "fundus": "Fundus",
 }
 REGION_COLOR_MAP: Dict[str, str] = {
     "crown": "#3498db",
-    "rim": "#e67e22",
-    "sulcus": "#9b59b6",
+    "wall": "#e67e22",
+    "fundus": "#9b59b6",
 }
 
 HOTSPOT_FIG_BASE_WIDTH = 900
@@ -872,13 +872,13 @@ def _dataset_config() -> Dict[str, Dict[str, Dict[str, object]]]:
                 ],
             },
         },
-        "rim": {
+        "wall": {
             "default": {
                 "label": "Hotspot #5999",
                 "hotspot_idx": 5999,
                 "metrics": [
-                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_rim.csv"),
-                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_rim.csv"),
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_5999.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_5999.csv"),
                 ],
             },
             "hs5983": {
@@ -889,14 +889,22 @@ def _dataset_config() -> Dict[str, Dict[str, Dict[str, object]]]:
                     ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_5983_rim.csv"),
                 ],
             },
+            'hs1703':{
+                "label": "Hotspot #1703",
+                "hotspot_idx": 1703,
+                "metrics": [
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_1703_wall.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_1703_wall.csv"),
+                ],
+            },
         },
-        "sulcus": {
+        "fundus": {
             "default": {
                 "label": "Hotspot #5575",
                 "hotspot_idx": 5575,
                 "metrics": [
-                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_sulcus.csv"),
-                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_sulcus.csv"),
+                    ("GD", "exp_c_map_score_metrics_GD_sigmoid4log_5575.csv"),
+                    ("NRMSD", "exp_c_map_score_metrics_NRMSD_sigmoid4log_5575.csv"),
                 ],
             },
             "hs10346": {
@@ -1053,8 +1061,8 @@ def render_page() -> None:
 
     dataset_labels: List[Tuple[str, str]] = [
         ("Crown", "crown"),
-        ("Rim", "rim"),
-        ("Sulcus", "sulcus"),
+        ("Wall", "wall"),
+        ("Fundus", "fundus"),
     ]
     # Initialize to satisfy static analyzers; will be set based on selection
     data_bundle: Dict[str, object] = {}
@@ -1300,7 +1308,7 @@ def render_page() -> None:
     
     # Collect payload based on comparison mode
     payload: List[Tuple[str, List[Tuple[str, str, str, pd.DataFrame, int]]]] = []
-    region_color_offsets = {"crown": 1, "rim": 2, "sulcus": 3}
+    region_color_offsets = {"crown": 1, "wall": 2, "fundus": 3}
     
     if compare_regions:
         # Comparison mode: combine data from both regions
