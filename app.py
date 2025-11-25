@@ -281,7 +281,7 @@ def _base_mesh_trace(mesh_ctx: MeshContext) -> go.Mesh3d:
 
 def _format_hotspot_layout(fig: go.Figure, title: str) -> None:
     fig.update_layout(
-        title=title,
+        title=dict(text=title, font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size=14)),
         scene=dict(
             xaxis=dict(visible=False),
             yaxis=dict(visible=False),
@@ -290,9 +290,16 @@ def _format_hotspot_layout(fig: go.Figure, title: str) -> None:
             camera=dict(eye=dict(x=1.6, y=1.6, z=0.9)),
         ),
         margin=dict(l=0, r=0, b=0, t=50),
-        legend=dict(itemsizing="constant", groupclick="togglegroup"),
+        legend=dict(
+            itemsizing="constant", 
+            groupclick="togglegroup",
+            font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size=11)
+        ),
         width=HOTSPOT_FIG_WIDTH,
         height=HOTSPOT_FIG_BASE_HEIGHT,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"),
     )
 
 
@@ -416,7 +423,7 @@ def _hash_color(label: str, region_color_offset: int = 0) -> str:
     """Generate a deterministic, aesthetically pleasing HEX color from a label.
 
     We map the label to a hue on the HSV color wheel and apply a small
-    region-specific offset so Crown/Rim colors remain distinguishable.
+    region-specific offset so Crown/Wall colors remain distinguishable.
     """
     base = _stable_hash(label)
     # Spread hues around the wheel; add an offset per region
@@ -562,9 +569,9 @@ def _build_meta_bar_figure(summary_df: pd.DataFrame, title: str, y_label: str) -
     fig.update_layout(
         title=title,
         barmode="group",
-        template="plotly_white",
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#ffffff",
+        # Use transparent background to adapt to Streamlit theme
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=70, r=30, t=70, b=70),
         legend=dict(
             orientation="h",
@@ -572,26 +579,25 @@ def _build_meta_bar_figure(summary_df: pd.DataFrame, title: str, y_label: str) -
             y=1.02,
             xanchor="center",
             x=0.5,
-            bgcolor="rgba(255,255,255,0.9)",
-            bordercolor="rgba(0,0,0,0.12)",
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(128,128,128,0.2)",
             borderwidth=1,
-            font=dict(color="#1f2933", size=11),
         ),
-        font=dict(family="Segoe UI", size=13, color="#1f2933"),
-        hoverlabel=dict(bgcolor="#ffffff", font=dict(color="#1f2933")),
+        font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size=13),
+        hoverlabel=dict(font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif")),
     )
     fig.update_xaxes(
-        title=dict(text="Experiment", font=dict(color="#1f2933", size=12)),
-        tickfont=dict(color="#1f2933", size=11),
-        linecolor="rgba(0,0,0,0.2)",
-        gridcolor="rgba(0,0,0,0.08)",
+        title=dict(text="Experiment", font=dict(size=12)),
+        tickfont=dict(size=11),
+        linecolor="rgba(128,128,128,0.2)",
+        gridcolor="rgba(128,128,128,0.1)",
     )
     fig.update_yaxes(
-        title=dict(text=y_label, font=dict(color="#1f2933", size=12)),
-        tickfont=dict(color="#1f2933", size=11),
+        title=dict(text=y_label, font=dict(size=12)),
+        tickfont=dict(size=11),
         rangemode="tozero",
-        gridcolor="rgba(0,0,0,0.08)",
-        linecolor="rgba(0,0,0,0.2)",
+        gridcolor="rgba(128,128,128,0.1)",
+        linecolor="rgba(128,128,128,0.2)",
     )
 
     if summary_df.empty:
@@ -670,22 +676,22 @@ def plot_score_results(
     # Color palettes for region comparison
     color_palettes = {
         0: {  # Default palette
-            "RANDOM": "#000000",
+            "RANDOM": "#808080",  # Changed from black to gray for dark mode visibility
             "ROW": "#1f77b4",
             "COL": "#ff7f0e",
         },
         1: {  # Crown palette (cooler tones)
-            "RANDOM": "#2c3e50",
+            "RANDOM": "#7f8c8d",  # Lighter gray-blue
             "ROW": "#3498db",
             "COL": "#1abc9c",
         },
         2: {  # Rim palette (warmer tones)
-            "RANDOM": "#34495e",
+            "RANDOM": "#95a5a6",  # Lighter gray
             "ROW": "#e74c3c",
             "COL": "#f39c12",
         },
         3: {  # Sulcus palette (purple tones)
-            "RANDOM": "#3d3d5c",
+            "RANDOM": "#717193",  # Lighter purple-gray
             "ROW": "#9b59b6",
             "COL": "#8e44ad",
         },
@@ -999,54 +1005,94 @@ def render_page() -> None:
     st.markdown(
         """
         <style>
-        :root {
-            --control-surface: ##0e1117;
-            --control-border: #2c3e55;
-            --control-foreground: #f1f5f9;
+        /* Global Font & Theme */
+        html, body, [class*="css"] {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
         }
-        .stApp {
-            background-color: var(--control-surface);
-            color: var(--control-foreground);
+        
+        /* Sidebar Styling */
+        section[data-testid="stSidebar"] {
+            background-color: var(--secondary-background-color);
+            border-right: 1px solid rgba(128, 128, 128, 0.1);
         }
-        div[data-testid="stSidebar"] {
-            background-color: var(--control-surface);
-            border-right: 1px solid var(--control-border);
-        }
-        div[data-testid="stSidebar"] * {
-            color: var(--control-foreground) !important;
-        }
-        .main .block-container {
-            background-color: var(--control-surface);
-            color: var(--control-foreground);
-        }
-        .stSlider > div[data-baseweb="slider"] > div:nth-child(2) {
-            background-color: #e9ecef;
-        }
-        .stSlider > div[data-baseweb="slider"] div[role="slider"] {
-            background-color: #3b82f6;
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
-        }
-        h1, h2, h3 {
-            color: var(--control-foreground);
-        }
-        .stButton button {
-            border-radius: 6px;
-            font-size: 0.85rem;
-            padding: 0.35rem 0.75rem;
-            transition: all 0.2s ease;
-        }
-        .stButton button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
+        
+        /* Card-like containers for expanders */
         div[data-testid="stExpander"] {
-            border-radius: 8px;
-            border: 1px solid #dee2e6;
-            margin-bottom: 0.5rem;
+            background-color: var(--background-color);
+            border: 1px solid rgba(128, 128, 128, 0.2);
+            border-radius: 12px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            margin-bottom: 1rem;
+            transition: box-shadow 0.2s ease;
+        }
+        div[data-testid="stExpander"]:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         }
         div[data-testid="stExpander"] summary {
             font-weight: 600;
-            padding: 0.5rem;
+            padding: 0.75rem 1rem;
+        }
+        div[data-testid="stExpander"] div[role="button"] p {
+            font-size: 1rem;
+        }
+
+        /* Button Styling - Apple-like */
+        .stButton button {
+            border-radius: 8px;
+            font-weight: 500;
+            border: 1px solid rgba(128, 128, 128, 0.2);
+            padding: 0.4rem 1rem;
+            transition: all 0.2s ease;
+            background-color: var(--secondary-background-color);
+        }
+        .stButton button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            border-color: rgba(128, 128, 128, 0.4);
+        }
+        .stButton button:active {
+            transform: translateY(0px);
+            box-shadow: none;
+        }
+
+        /* Tabs Styling */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 24px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
+            background-color: transparent;
+            border-radius: 4px 4px 0 0;
+            gap: 1px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: transparent;
+            border-bottom: 2px solid #3b82f6;
+        }
+
+        /* Headers */
+        h1, h2, h3 {
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+        
+        /* Custom scrollbar for cleaner look */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(128, 128, 128, 0.2);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(128, 128, 128, 0.4);
         }
         </style>
         """,
@@ -1075,9 +1121,9 @@ def render_page() -> None:
         # Dataset selection with expander for cleaner look
         with st.expander("📊 Dataset Selection", expanded=True):
             compare_regions = st.checkbox(
-                "🔄 Compare all regions (Crown/Rim/Sulcus)",
+                "🔄 Compare all regions (Crown/Wall/Fundus)",
                 value=False,
-                help="Enable this to overlay Crown, Rim and Sulcus data for the same experiments"
+                help="Enable this to overlay Crown, Wall and Fundus data for the same experiments"
             )
 
             dataset_map = {label: key for label, key in dataset_labels}
@@ -1133,7 +1179,7 @@ def render_page() -> None:
                 seq_max = int(cast(int, data_bundle.get("seq_max", 100)))
                 dataset_key_slug = str(data_bundle.get("dataset_identifier", dataset_identifier)).replace(":", "_")
             else:
-                st.info("📊 Comparing Crown, Rim and Sulcus regions")
+                st.info("📊 Comparing Crown, Wall and Fundus regions")
                 datasets_to_plot = []
                 exp_sets: List[Set[str]] = []
                 real_sets: List[Set[RealizationType]] = []
@@ -1379,23 +1425,23 @@ def render_page() -> None:
     for idx in range(1, rows + 1):
         plotly_fig.update_xaxes(
             showgrid=True,
-            gridcolor="rgba(0, 0, 0, 0.08)",
+            gridcolor="rgba(128, 128, 128, 0.1)",
             zeroline=False,
-            linecolor="rgba(0, 0, 0, 0.2)",
+            linecolor="rgba(128, 128, 128, 0.2)",
             mirror=True,
-            title_font=dict(color="#2c3e50", size=12),
-            tickfont=dict(color="#495057", size=11),
+            title_font=dict(size=12),
+            tickfont=dict(size=11),
             row=idx,
             col=1,
         )
         plotly_fig.update_yaxes(
             showgrid=True,
-            gridcolor="rgba(0, 0, 0, 0.06)",
+            gridcolor="rgba(128, 128, 128, 0.1)",
             zeroline=False,
-            linecolor="rgba(0, 0, 0, 0.2)",
+            linecolor="rgba(128, 128, 128, 0.2)",
             mirror=True,
-            title_font=dict(color="#2c3e50", size=12),
-            tickfont=dict(color="#495057", size=11),
+            title_font=dict(size=12),
+            tickfont=dict(size=11),
             row=idx,
             col=1,
         )
@@ -1404,7 +1450,6 @@ def render_page() -> None:
     plot_height = max(440, rows * base_height)
 
     plotly_fig.update_layout(
-        template="plotly_white",
         hovermode="x unified",
         legend=dict(
             title="",
@@ -1413,20 +1458,20 @@ def render_page() -> None:
             y=1.02,
             xanchor="center",
             x=0.5,
-            bgcolor="rgba(255, 255, 255, 0.95)",
-            bordercolor="rgba(0, 0, 0, 0.15)",
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(128, 128, 128, 0.2)",
             borderwidth=1,
             itemclick="toggleothers",
-            font=dict(color="#2c3e50", size=10),
+            font=dict(size=10),
         ),
         margin=dict(l=70, r=40, t=130, b=70),
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#f8f9fa",
-        font=dict(family="Segoe UI", size=13, color="#2c3e50"),
-        hoverlabel=dict(bgcolor="#ffffff", bordercolor="#dee2e6", font=dict(color="#2c3e50", size=12)),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size=13),
+        hoverlabel=dict(bordercolor="rgba(128, 128, 128, 0.2)", font=dict(size=12)),
         height=plot_height,
     )
-    plotly_fig.update_annotations(font=dict(size=15, color="#2c3e50"), yshift=10)
+    plotly_fig.update_annotations(font=dict(size=15), yshift=10)
 
     config = {
         "displayModeBar": True,
